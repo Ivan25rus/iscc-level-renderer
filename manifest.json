@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "kind": "iscc-level-renderer",
+  "createdAtUTC": "2026-10-19T10:43:56.737886+00:00",
+  "files": {
+    ".gitattributes": {
+      "sha256": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9",
+      "size": 14
+    },
+    ".github/workflows/check.yml": {
+      "sha256": "91fcbb2b6db859af0149290430f676de58a3115b2c4ebb0f31a1f105d07f9693",
+      "size": 599
+    },
+    ".gitignore": {
+      "sha256": "79edb5005906a0be7f40c25819bb1843aac71aa8bbac29b034c049ba18e5e813",
+      "size": 124
+    },
+    "AGENTS.md": {
+      "sha256": "a10f9ebc32632743a7273c49a9d6453c105b88ce90c2604ecd2d72cfff4c5052",
+      "size": 4386
+    },
+    "BUILD-INFO.json": {
+      "sha256": "eabac55e603c5f094ca2177a56a4e43ed0caedd6fc89a169fbabb3525fe572a9",
+      "size": 431
+    },
+    "CLAUDE.md": {
+      "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
+      "size": 11
+    },
+    "INSTALL.md": {
+      "sha256": "549fbb3b4b92b229ec74cc3ea37243d68c9b0b211a9a3ebcc5bf89679329d303",
+      "size": 7252
+    },
+    "PUBLISH.md": {
+      "sha256": "047b6665f455f82a40174c47c1d11bf61317b67e801eede3b5b25c54da539c6f",
+      "size": 1931
+    },
+    "README.md": {
+      "sha256": "7fc4931b99529248597adde9487f960889d3bd98cea6d67771a0665e61b80a89",
+      "size": 5821
+    },
+    "SETUP.html": {
+      "sha256": "8425a80c595796282d33c156f6a3d59b2b7797f39a0eb3a7ab72db7990763f98",
+      "size": 7423
+    },
+    "SOURCE_MAP.md": {
+      "sha256": "173a26eceed24dddec1a4f0fc84d07ea7d6fe44ffa76908d3af03d796738d11f",
+      "size": 3545
+    },
+    "index.html": {
+      "sha256": "8425a80c595796282d33c156f6a3d59b2b7797f39a0eb3a7ab72db7990763f98",
+      "size": 7423
+    },
+    "install.py": {
+      "sha256": "35db2da33b15c6d203cae4c461471bb0d09d3a3a913b2c72375fb9e4af46bebd",
+      "size": 11649
+    },
+    "module/candle-mappings.js": {
+      "sha256": "353c9a84964ebad67da99ff32738310e4e0d85754b28763c14d667814a41ccce",
+      "size": 2523
+    },
+    "module/candleLevels.js": {
+      "sha256": "fc0fef0accc0288f9b8f4a4f29518d0ba8700dbd43bff3b2981264e10b8fa72e",
+      "size": 22210
+    },
+    "module/config/candle-renderer-settings-descriptor.json": {
+      "sha256": "79ea7ac1d169c495112f31e5378453af7e296eee5281eed69bea6f1b340feed0",
+      "size": 1043
+    },
+    "module/config/candle-renderer.json": {
+      "sha256": "f846a78c1eb0841a68d1deccefc3de6af1196f01fc4181ca76f0cd78972f7ae1",
+      "size": 112
+    },
+    "module/index.js": {
+      "sha256": "66842583c61efb53cd611a1efc003d3bc3bce5c777766fe8c9d875df2e06adf3",
+      "size": 3715
+    },
+    "module/page.js": {
+      "sha256": "07b06dcb6e3b277b4c27d1aa46d73bb5d71c2fd41da4a5d930c725d90d8e4157",
+      "size": 8926
+    },
+    "module/reader.js": {
+      "sha256": "d118fe1c452b25eceb51d02bad2e920fd4f7b92932b9dd2b9d2309e1f46ca569",
+      "size": 5865
+    },
+    "module/transport.js": {
+      "sha256": "a18b0dc9e963cb2c1f2f5ebf4a22c5482bc14b3f2641489530d5c92e655fd20d",
+      "size": 4470
+    },
+    "mt5/ISCC Addon Levels.mq5": {
+      "sha256": "cd98a82c8206af28f34f1fc8dc5a02c10e99af0dc0d460ba89d2e71476c5e48a",
+      "size": 6953
+    },
+    "mt5/ISCC Candle Levels.mq5": {
+      "sha256": "f8d35bc254b812952dda392ec41814dd145f49c7b4e29bc966c49513bb03103a",
+      "size": 6949
+    },
+    "package.json": {
+      "sha256": "3ccf356937f04e923eac585b97e46ec8a1a5e1cf2e93222b65a6dea19f76fdd9",
+      "size": 327
+    },
+    "receiver/candle_levels.py": {
+      "sha256": "e1d904db3bd16139220c0b5da4bc6680166c1c7b9f325e03b63da7ac9f6f6c7f",
+      "size": 22580
+    },
+    "receiver/config.example.json": {
+      "sha256": "89ae260ba229ece681072a6638f595b1b2700944b3e09c0af4b7cf4756149405",
+      "size": 151
+    },
+    "receiver/read_only.py": {
+      "sha256": "a5ff57187404bcf7c133c173623d10cc4b6e34232947233c7323a05b12150709",
+      "size": 4731
+    },
+    "receiver/requirements.txt": {
+      "sha256": "3ddccf17bdc75977063886090942048611aee970a475f50d31f7c063feb90514",
+      "size": 19
+    },
+    "tests/core.test.js": {
+      "sha256": "9da9007fc37a2b292983d446bdcaa003a31ad883b3acd92429939970a9e2e16a",
+      "size": 28680
+    },
+    "tests/renderer.test.js": {
+      "sha256": "305c59c1e0ed8bec78f5f3de6f1e08f0afaaa583478e8ee88ed9cc8bfd277953",
+      "size": 7657
+    },
+    "tests/test_candles.py": {
+      "sha256": "5684faae1a7d353c8f51007165ac98e00a0256d2848810fc1105931faf6d0370",
+      "size": 13103
+    },
+    "tests/test_installer.py": {
+      "sha256": "8a5af89b616b0fb0a38fa6decb8cc80a57cc8483eac983b148826cccbe466b60",
+      "size": 8320
+    },
+    "tests/test_reader.py": {
+      "sha256": "5c390481788fc54c09209bbe5e309ab559c9690ab88dd22d71efedb8a31e4f9e",
+      "size": 4716
+    }
+  }
+}
