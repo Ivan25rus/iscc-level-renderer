@@ -20,7 +20,7 @@ class Terminal:
     def terminal_info(self):
         return types.SimpleNamespace(data_path=self.directory)
     def symbol_info(self, symbol):
-        return types.SimpleNamespace(name=symbol) if symbol in ('USTEC', 'SPX500', 'XAUUSD') else None
+        return types.SimpleNamespace(name=symbol,digits=2,trade_tick_size=0.01) if symbol in ('USTEC', 'SPX500', 'XAUUSD') else None
     def copy_rates_range(self, symbol, timeframe, start, end):
         self.reads.append((symbol, timeframe, start.timestamp(), end.timestamp()))
         return [dict(time=self.stamp, high=self.high, low=self.low)]
@@ -75,6 +75,28 @@ class CandleTests(unittest.TestCase):
         self.assertEqual(self.mt5.reads[0][2:], (self.stamp+self.offset, self.stamp+self.offset))
         self.ack(state)
         self.assertEqual(self.book.state()['levels'][0]['status'], 'ready')
+
+    def test_arbitrary_tv_price_is_rejected_before_history_or_drawing(self):
+        with self.assertRaises(ValueError):
+            self.book.apply(dict(self.payload,mode='tv-price',side='price',price=30355.37))
+        self.assertEqual(self.mt5.reads,[])
+        self.assertEqual(self.book.state()['levels'],[])
+
+    def test_red_source_is_purple_without_changing_candle_period_price_or_color_in_state(self):
+        for source_color in (0xf23645,0xff0000,0x673ab7):
+            for side in ('high','low'):
+                self.payload['revision'] += 1
+                state=self.book.apply(dict(self.payload,side=side,colorRgb=source_color))
+                row=state['levels'][0]
+                expected_price=self.mt5.high if side=='high' else self.mt5.low
+                self.assertEqual((row['timeframe'],row['time'],row['side'],row['colorRgb'],row['price']),
+                                 ('M1',self.stamp,side,source_color,expected_price))
+                rows=list(csv.reader(io.StringIO((self.book.files()/'iscc-addon-levels.csv').read_text()),delimiter='\t'))
+                self.assertEqual(int(rows[1][8]),0x673ab7)
+                self.ack(state,color=0xf23645)
+                self.assertEqual(self.book.state()['levels'][0]['status'],'drawing')
+                self.ack(state,color=0x673ab7)
+                self.assertEqual(self.book.state()['levels'][0]['status'],'ready')
 
     def test_low_is_a_single_level_and_line_and_ray_preserve_semantics(self):
         state = self.book.apply(dict(self.payload, side='low', tool='ray'))
