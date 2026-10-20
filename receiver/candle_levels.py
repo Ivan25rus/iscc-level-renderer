@@ -44,7 +44,13 @@ def snapshot_protocol(drawing):
 def marker_color(row):
     rgb = row.get('colorRgb', 0xff6347 if row['side'] == 'high' else 0x00bfff)
     # Preserve the TV source color; white is displayed red on MT5 charts.
-    return 0xff0000 if rgb == 0xffffff else rgb
+    if rgb == 0xffffff:
+        return 0xff0000
+    # Source reds use the same purple as the user's minute levels.
+    # This changes presentation only: timeframe, side, time and price stay intact.
+    if rgb in (0xf23645, 0xff0000):
+        return 0x673ab7
+    return rgb
 
 
 @lru_cache(maxsize=4)
