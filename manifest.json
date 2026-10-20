@@ -1,15 +1,15 @@
 {
   "schema": 1,
   "kind": "iscc-level-renderer",
-  "createdAtUTC": "2026-10-19T10:43:56.737886+00:00",
+  "createdAtUTC": "2026-10-20T02:44:41.590093+00:00",
   "files": {
     ".gitattributes": {
       "sha256": "a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9",
       "size": 14
     },
     ".github/workflows/check.yml": {
-      "sha256": "91fcbb2b6db859af0149290430f676de58a3115b2c4ebb0f31a1f105d07f9693",
-      "size": 599
+      "sha256": "e23857361b1795f17ca44af808810339124c433e906ac212d383f713252d1424",
+      "size": 792
     },
     ".gitignore": {
       "sha256": "79edb5005906a0be7f40c25819bb1843aac71aa8bbac29b034c049ba18e5e813",
@@ -20,8 +20,8 @@
       "size": 4386
     },
     "BUILD-INFO.json": {
-      "sha256": "eabac55e603c5f094ca2177a56a4e43ed0caedd6fc89a169fbabb3525fe572a9",
-      "size": 431
+      "sha256": "6069d1bf59ae2ce93024d78cd271bca66dbfc9935735883d725d91a6fb83a34e",
+      "size": 483
     },
     "CLAUDE.md": {
       "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
@@ -36,20 +36,20 @@
       "size": 1931
     },
     "README.md": {
-      "sha256": "7fc4931b99529248597adde9487f960889d3bd98cea6d67771a0665e61b80a89",
-      "size": 5821
+      "sha256": "bf94a5339fbed6af5684a059c2903e0e6cf243baf9af44adfd3353694421e684",
+      "size": 6830
     },
     "SETUP.html": {
-      "sha256": "8425a80c595796282d33c156f6a3d59b2b7797f39a0eb3a7ab72db7990763f98",
-      "size": 7423
+      "sha256": "92805de5ef62c24a3bf50b08a41ae2df7abc59d9788e079a240ed6f1617e366b",
+      "size": 7488
     },
     "SOURCE_MAP.md": {
-      "sha256": "173a26eceed24dddec1a4f0fc84d07ea7d6fe44ffa76908d3af03d796738d11f",
-      "size": 3545
+      "sha256": "3a01617ee230b9d82aed4d162fa25c9a7aeaf84773079507ac729760dd47368b",
+      "size": 4293
     },
     "index.html": {
-      "sha256": "8425a80c595796282d33c156f6a3d59b2b7797f39a0eb3a7ab72db7990763f98",
-      "size": 7423
+      "sha256": "92805de5ef62c24a3bf50b08a41ae2df7abc59d9788e079a240ed6f1617e366b",
+      "size": 7488
     },
     "install.py": {
       "sha256": "35db2da33b15c6d203cae4c461471bb0d09d3a3a913b2c72375fb9e4af46bebd",
@@ -88,20 +88,20 @@
       "size": 4470
     },
     "mt5/ISCC Addon Levels.mq5": {
-      "sha256": "cd98a82c8206af28f34f1fc8dc5a02c10e99af0dc0d460ba89d2e71476c5e48a",
-      "size": 6953
+      "sha256": "b47c12e05b1a1f7561ac0945a7c337a86af2e2632de4e059eef7f8a8948dd985",
+      "size": 9187
     },
     "mt5/ISCC Candle Levels.mq5": {
-      "sha256": "f8d35bc254b812952dda392ec41814dd145f49c7b4e29bc966c49513bb03103a",
-      "size": 6949
+      "sha256": "251235a31a31c18631db2cc98e19c06a588ba26e4a3a23fdb2f4db826038037b",
+      "size": 9184
     },
     "package.json": {
-      "sha256": "3ccf356937f04e923eac585b97e46ec8a1a5e1cf2e93222b65a6dea19f76fdd9",
+      "sha256": "c4bb6cf43ba6d133ef37010b80da7e6f992c87939f3f0054473e8a9d5a3944ef",
       "size": 327
     },
     "receiver/candle_levels.py": {
-      "sha256": "e1d904db3bd16139220c0b5da4bc6680166c1c7b9f325e03b63da7ac9f6f6c7f",
-      "size": 22580
+      "sha256": "1ce0575eba2c67add8e16874f68af7f76554e26a0dc25ef1e333c3df5f668b52",
+      "size": 22805
     },
     "receiver/config.example.json": {
       "sha256": "89ae260ba229ece681072a6638f595b1b2700944b3e09c0af4b7cf4756149405",
@@ -124,8 +124,12 @@
       "size": 7657
     },
     "tests/test_candles.py": {
-      "sha256": "5684faae1a7d353c8f51007165ac98e00a0256d2848810fc1105931faf6d0370",
-      "size": 13103
+      "sha256": "6c0d82d392537874b79293dc50131ec52abef66058a9c62a89e4a53ae0ff3f49",
+      "size": 14532
+    },
+    "tests/test_chart_policy.py": {
+      "sha256": "4d695a25577f4f1d619994fbc39d2b03339f69a489e635e670175ba4ceea2a15",
+      "size": 11765
     },
     "tests/test_installer.py": {
       "sha256": "8a5af89b616b0fb0a38fa6decb8cc80a57cc8483eac983b148826cccbe466b60",
