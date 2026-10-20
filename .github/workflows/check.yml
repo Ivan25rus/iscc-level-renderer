@@ -21,3 +21,7 @@ jobs:
         run: node --test tests/core.test.js tests/renderer.test.js
       - name: Python unit tests
         run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Addon indicator chart policy
+        env:
+          CANDLE_INDICATOR_SOURCE: mt5/ISCC Addon Levels.mq5
+        run: python -m unittest discover -s tests -p 'test_chart_policy.py'
