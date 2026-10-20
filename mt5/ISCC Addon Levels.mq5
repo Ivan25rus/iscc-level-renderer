@@ -1,5 +1,5 @@
 #property copyright "ISCC"
-#property version "1.13"
+#property version "1.15"
 #property indicator_chart_window
 #property indicator_plots 0
 
@@ -52,7 +52,7 @@ bool Load(Marker &markers[],string &generation,int &protocol) {
       markers[i].lineColor=FromRgb(rgb);
       if(StringLen(markers[i].id)!=24 || markers[i].price<=0 || !MathIsValidNumber(markers[i].price)
          || markers[i].time<=0 || (markers[i].tool!="line" && markers[i].tool!="ray")
-         || (markers[i].side!="high" && markers[i].side!="low")) {valid=false;break;}
+         || (markers[i].side!="high" && markers[i].side!="low" && markers[i].side!="price")) {valid=false;break;}
    }
    if(valid) valid=ReadLine(handle,parts) && ArraySize(parts)==3 && parts[0]=="END" && parts[1]==generation && (int)StringToInteger(parts[2])==count;
    FileClose(handle);
@@ -65,35 +65,79 @@ bool Contains(Marker &markers[],string name,string symbol) {
    return false;
 }
 
-bool Draw(long chart,Marker &marker) {
+bool EnsureInteger(long chart,string name,ENUM_OBJECT_PROPERTY_INTEGER property,long expected,bool &changed) {
+   long actual;
+   if(!ObjectGetInteger(chart,name,property,0,actual)) return false;
+   if(actual==expected) return true;
+   if(!ObjectSetInteger(chart,name,property,expected)) return false;
+   changed=true;
+   return ObjectGetInteger(chart,name,property,0,actual) && actual==expected;
+}
+
+bool EnsurePrice(long chart,string name,double expected,bool &changed) {
+   double actual;
+   if(!ObjectGetDouble(chart,name,OBJPROP_PRICE,0,actual)) return false;
+   if(MathAbs(actual-expected)<0.00000001) return true;
+   if(!ObjectSetDouble(chart,name,OBJPROP_PRICE,0,expected)) return false;
+   changed=true;
+   return ObjectGetDouble(chart,name,OBJPROP_PRICE,0,actual) && MathAbs(actual-expected)<0.00000001;
+}
+
+bool EnsureTooltip(long chart,string name,string expected,bool &changed) {
+   string actual;
+   if(!ObjectGetString(chart,name,OBJPROP_TOOLTIP,0,actual)) return false;
+   if(actual==expected) return true;
+   if(!ObjectSetString(chart,name,OBJPROP_TOOLTIP,expected)) return false;
+   changed=true;
+   return ObjectGetString(chart,name,OBJPROP_TOOLTIP,0,actual) && actual==expected;
+}
+
+bool Draw(long chart,Marker &marker,bool &changed) {
    string name=PREFIX+marker.id;
    // The user chose native full horizontal levels in MT5 for both TV tools.
    // MT5 itself draws their prices on its standard right-hand price scale.
    // Source candle/timeframe/side and the exact confirmed price remain intact.
-   if(ObjectFind(chart,name)>=0 && (ENUM_OBJECT)ObjectGetInteger(chart,name,OBJPROP_TYPE)!=OBJ_HLINE)
-      if(!ObjectDelete(chart,name)) return false;
-   if(ObjectFind(chart,name)<0 && !ObjectCreate(chart,name,OBJ_HLINE,0,0,marker.price)) return false;
-   if(!ObjectSetDouble(chart,name,OBJPROP_PRICE,0,marker.price)
-      || !ObjectSetInteger(chart,name,OBJPROP_COLOR,marker.lineColor)
-      || !ObjectSetInteger(chart,name,OBJPROP_WIDTH,1)
-      || !ObjectSetInteger(chart,name,OBJPROP_STYLE,STYLE_SOLID)
-      || !ObjectSetInteger(chart,name,OBJPROP_BACK,false)
-      || !ObjectSetInteger(chart,name,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS)
-      || !ObjectSetInteger(chart,name,OBJPROP_SELECTABLE,false)
-      || !ObjectSetInteger(chart,name,OBJPROP_SELECTED,false)
-      || !ObjectSetInteger(chart,name,OBJPROP_HIDDEN,false)) return false;
-   ObjectSetString(chart,name,OBJPROP_TOOLTIP,"TV → MT5 | "+marker.timeframe+" | "+marker.side+" | "+TimeToString(marker.time));
-   // A queued ObjectCreate is not confirmation of an applied level.
-   return ObjectFind(chart,name)==0 && (ENUM_OBJECT)ObjectGetInteger(chart,name,OBJPROP_TYPE)==OBJ_HLINE
-      && MathAbs(ObjectGetDouble(chart,name,OBJPROP_PRICE,0)-marker.price)<0.00000001
-      && (color)ObjectGetInteger(chart,name,OBJPROP_COLOR)==marker.lineColor
-      && ObjectGetInteger(chart,name,OBJPROP_TIMEFRAMES)==OBJ_ALL_PERIODS
-      && ObjectGetInteger(chart,name,OBJPROP_WIDTH)==1
-      && ObjectGetInteger(chart,name,OBJPROP_STYLE)==STYLE_SOLID
-      && !ObjectGetInteger(chart,name,OBJPROP_BACK);
+   int window=ObjectFind(chart,name);
+   if(window>=0) {
+      long type;
+      if(!ObjectGetInteger(chart,name,OBJPROP_TYPE,0,type)) return false;
+      if(window!=0 || type!=OBJ_HLINE) {
+         if(!ObjectDelete(chart,name)) return false;
+         changed=true;
+         if(ObjectFind(chart,name)>=0) return false;
+         window=-1;
+      }
+   }
+   if(window<0) {
+      if(!ObjectCreate(chart,name,OBJ_HLINE,0,0,marker.price)) return false;
+      changed=true;
+      // A queued ObjectCreate is not confirmation of an applied level.
+      if(ObjectFind(chart,name)!=0) return false;
+   }
+   // Verify actual properties every tick; write only changed values. This also
+   // repairs deleted/edited owned objects without repainting unchanged charts.
+   return EnsurePrice(chart,name,marker.price,changed)
+      && EnsureInteger(chart,name,OBJPROP_COLOR,marker.lineColor,changed)
+      && EnsureInteger(chart,name,OBJPROP_WIDTH,1,changed)
+      && EnsureInteger(chart,name,OBJPROP_STYLE,STYLE_SOLID,changed)
+      && EnsureInteger(chart,name,OBJPROP_BACK,false,changed)
+      && EnsureInteger(chart,name,OBJPROP_TIMEFRAMES,OBJ_ALL_PERIODS,changed)
+      && EnsureInteger(chart,name,OBJPROP_SELECTABLE,false,changed)
+      && EnsureInteger(chart,name,OBJPROP_SELECTED,false,changed)
+      && EnsureInteger(chart,name,OBJPROP_HIDDEN,false,changed)
+      && EnsureTooltip(chart,name,"TV → MT5 | "+marker.timeframe+" | "+marker.side+" | "+TimeToString(marker.time),changed);
 }
 
-int OnInit() {EventSetTimer(1);return INIT_SUCCEEDED;}
+int OnInit() {
+   EventSetTimer(1);
+   // A bounded load receipt lets the installer verify the running version.
+   int status=FileOpen("iscc-addon-levels-indicator-status.csv",FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ,0,CP_UTF8);
+   if(status!=INVALID_HANDLE) {
+      FileWriteString(status,"ISCC_CANDLE_LEVELS_INDICATOR\t1.15\texisting-charts-only\t"+IntegerToString(ChartID())+"\n");
+      FileClose(status);
+   }
+   return INIT_SUCCEEDED;
+}
 void OnDeinit(const int reason) {EventKillTimer();}
 int OnCalculate(const int rates_total,const int prev_calculated,const datetime &time[],
    const double &open[],const double &high[],const double &low[],const double &close[],
@@ -102,37 +146,50 @@ int OnCalculate(const int rates_total,const int prev_calculated,const datetime &
 void OnTimer() {
    Marker markers[];string generation;int protocol;
    if(!Load(markers,generation,protocol)) return;
-   bool cleanupReady=true;
+   long charts[];string symbols[];bool changed[];
    for(long chart=ChartFirst();chart>=0;chart=ChartNext(chart)) {
-      bool changed=false;
+      int index=ArraySize(charts);
+      ArrayResize(charts,index+1);ArrayResize(symbols,index+1);ArrayResize(changed,index+1);
+      charts[index]=chart;symbols[index]=ChartSymbol(chart);changed[index]=false;
+   }
+   bool cleanupReady=true;
+   for(int c=0;c<ArraySize(charts);c++) {
+      long chart=charts[c];
       for(int j=ObjectsTotal(chart)-1;j>=0;j--) {
          string name=ObjectName(chart,j);
-         if(StringFind(name,PREFIX)==0 && !Contains(markers,name,ChartSymbol(chart))) {
+         if(StringFind(name,PREFIX)==0 && !Contains(markers,name,symbols[c])) {
             if(!ObjectDelete(chart,name) || ObjectFind(chart,name)>=0) cleanupReady=false;
-            changed=true;
+            changed[c]=true;
          }
       }
-      if(changed) ChartRedraw(chart);
    }
-   if(!cleanupReady) return;
+   if(!cleanupReady) {
+      for(int c=0;c<ArraySize(charts);c++) if(changed[c]) ChartRedraw(charts[c]);
+      return;
+   }
+   bool found[],ready[];
+   ArrayResize(found,ArraySize(markers));ArrayResize(ready,ArraySize(markers));
+   ArrayInitialize(found,false);ArrayInitialize(ready,true);
+   for(int c=0;c<ArraySize(charts);c++) {
+      for(int i=0;i<ArraySize(markers);i++) {
+         if(symbols[c]!=markers[i].symbol) continue;
+         found[i]=true;
+         bool objectChanged=false;
+         if(!Draw(charts[c],markers[i],objectChanged)) ready[i]=false;
+         if(objectChanged) changed[c]=true;
+      }
+      // One redraw for the whole batch, and none for unchanged levels.
+      if(changed[c]) ChartRedraw(charts[c]);
+   }
    int output=FileOpen(ACK_FILE,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ,0,CP_UTF8);
    if(output==INVALID_HANDLE) return;
    FileWriteString(output,"ISCC_CANDLE_LEVELS_ACK\t"+IntegerToString(protocol)+"\t"+generation+"\t"+IntegerToString(ArraySize(markers))+"\n");
    for(int i=0;i<ArraySize(markers);i++) {
-      bool found=false,ready=true;
-      for(long chart=ChartFirst();chart>=0;chart=ChartNext(chart)) {
-         if(ChartSymbol(chart)!=markers[i].symbol) continue;
-         found=true;if(!Draw(chart,markers[i])) ready=false;
-         ChartRedraw(chart);
-      }
-      if(!found) {
-         long chart=ChartOpen(markers[i].symbol,PERIOD_M5);
-         ready=chart>0 && Draw(chart,markers[i]);found=chart>0;
-         if(chart>0) ChartRedraw(chart);
-      }
+      // A closed/missing chart stays closed. Its marker remains pending until
+      // the user opens a matching chart; rendering never creates chart tabs.
       int digits=(int)SymbolInfoInteger(markers[i].symbol,SYMBOL_DIGITS);
       string row=markers[i].id+"\t"+markers[i].revision+"\t"+markers[i].symbol+"\t"
-         +(found && ready ? "ready" : "pending")+"\t"+DoubleToString(markers[i].price,digits);
+         +(found[i] && ready[i] ? "ready" : "pending")+"\t"+DoubleToString(markers[i].price,digits);
       if(protocol==2) row+="\t"+IntegerToString(ToRgb(markers[i].lineColor));
       FileWriteString(output,row+"\n");
    }
