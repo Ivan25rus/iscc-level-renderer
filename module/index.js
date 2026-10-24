@@ -45,6 +45,7 @@ function attach({ servicesApi, root, getEnabled = () => true, settings,
     }
   });
   reader = createReader({ enabled, acceptSnapshot: value => sync.acceptSnapshot(value),
+    acceptInventory: (inventory, readStartedAt) => sync.reconcileInventory(inventory, readStartedAt),
     sources: () => Object.keys(require('./candle-mappings').sourceMap(config)), anchors: () => sync.requiredBars(),
     onError: error => { sync.lastError = 'Чтение разметки TradingView: ' + error.message; onStatus(sync.status()); } });
   settings.onApply('candle-renderer', ({ config: next }) => {
