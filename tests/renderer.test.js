@@ -151,3 +151,45 @@ test('a failed chart does not block later chart snapshots', async () => {
   try {await fixture.next();assert.equal(fixture.errors.length,1);assert.equal(fixture.snapshots.length,1);}
   finally {fixture.reader.stop();}
 });
+
+test('unchanged addon reads refresh scoped inventory proof without replaying sources', async () => {
+  const inventories = [], inventory = {scope:'probe',complete:true,
+    symbols:[{symbol:'CAPITALCOM:NAS100',complete:true,ids:[]}]};
+  let reads = 0;
+  const fixture=readerHarness({acceptInventory:(value,readStartedAt)=>inventories.push({value,readStartedAt}),
+    getTargets:async()=>[{id:'one',url:'https://tradingview.com/chart/probe/',
+      webSocketDebuggerUrl:'ws://127.0.0.1:9222/devtools/page/one'}],
+    run:async(_url,expression)=>{
+      assert.ok(expression.includes('"scope":"probe"'));
+      reads++;
+      return reads===1 ? {sources:[],series:[],token:'one:1',inventory}
+        : reads===2 ? {unchanged:true,token:'one:1'} : {sources:[],series:[]};
+    }});
+  try {
+    await fixture.next();await fixture.next();
+    assert.equal(fixture.snapshots.length,1);
+    assert.ok(fixture.snapshots[0].readStartedAt>0);
+    assert.deepEqual(inventories[0].value,inventory);
+    assert.ok(inventories[0].readStartedAt>0);
+    await fixture.next();
+    assert.deepEqual(inventories.at(-1).value,{scope:'probe',complete:false,symbols:[]});
+    assert.equal(fixture.snapshots.length,1);
+  } finally {fixture.reader.stop();}
+});
+
+test('a failed addon read discards cached inventory before recovery', async () => {
+  const inventories=[];let reads=0;
+  const fixture=readerHarness({acceptInventory:value=>inventories.push(value),
+    getTargets:async()=>[{id:'one',url:'https://tradingview.com/chart/probe/'}],
+    run:async()=>{
+      if(++reads===1)return {sources:[],series:[],token:'one:1',
+        inventory:{scope:'probe',complete:true,symbols:[]}};
+      if(reads===2)throw Error('temporary chart failure');
+      return {unchanged:true,token:'one:1'};
+    }});
+  try {
+    await fixture.next();await fixture.next();await fixture.next();
+    assert.equal(fixture.errors.length,1);
+    assert.equal(inventories.length,0);
+  } finally {fixture.reader.stop();}
+});
