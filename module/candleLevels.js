@@ -67,6 +67,7 @@ class CandleLevelSync {
     this.records = new Map(); this.bars = new Map(); this.busy = false; this.closed = false;
     this.dirty = false; this.publishNeeded = false; this.lastError = null;
     this.networkFailures = 0; this.networkRetryAt = 0; this.mappingSignature = null;
+    this.inventories = new Map(); this.missingSources = new Map();
     for (const row of initial.records || []) {
       if (row && /^[a-f0-9]{24}$/.test(row.id || '') && /^[A-Za-z0-9_.:-]{1,160}$/.test(row.sourceId || '')
         && Number.isSafeInteger(row.revision) && row.revision > 0) {
@@ -120,6 +121,53 @@ class CandleLevelSync {
         || !Number.isFinite(entry[1].serverUpdateTime) || entry[1].serverUpdateTime <= 0) continue;
       this.acceptSource(entry[0], entry[1]);
     }
+    this.reconcileInventory(snapshot.inventory, snapshot.readStartedAt);
+  }
+  reconcileInventory(inventory, readStartedAt) {
+    if (!inventory || !/^[A-Za-z0-9_-]{1,128}$/.test(inventory.scope || '')) return;
+    const now = this.clock(), observedAt = Number(readStartedAt);
+    if (!Number.isFinite(observedAt) || observedAt > now || now - observedAt > 30000) return;
+    for (const [scope, entries] of this.inventories) {
+      if (![...entries.values()].some(entry => now - entry.observedAt <= 30000)) this.inventories.delete(scope);
+    }
+    const symbols = new Map();
+    if (inventory.complete === true && Array.isArray(inventory.symbols) && inventory.symbols.length <= 32) {
+      for (const entry of inventory.symbols) {
+        if (entry?.complete !== true || !sourceMap(this.getConfig())[entry.symbol]
+          || !Array.isArray(entry.ids) || entry.ids.length > 2000
+          || !entry.ids.every(id => typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(id))) continue;
+        symbols.set(entry.symbol, { ids: new Set(entry.ids), observedAt });
+      }
+    }
+    this.inventories.delete(inventory.scope); this.inventories.set(inventory.scope, symbols);
+    while (this.inventories.size > 64) this.inventories.delete(this.inventories.keys().next().value);
+    for (const row of this.records.values()) {
+      if (row.removed) { this.missingSources.delete(row.sourceId); continue; }
+      const current = symbols.get(row.sourceSymbol);
+      if (current?.ids.has(row.sourceId)) {
+        const origins = Array.isArray(row.chartScopes) ? row.chartScopes : [];
+        if (!origins.includes(inventory.scope) && origins.length < 16) {
+          row.chartScopes = [...origins, inventory.scope]; this.dirty = true;
+        } else if (!origins.includes(inventory.scope) && !row.chartScopesOverflow) {
+          row.chartScopesOverflow = true; this.dirty = true;
+        }
+        this.missingSources.delete(row.sourceId); continue;
+      }
+      // Legacy records have no proven origin. An unrelated or closed layout
+      // cannot establish that such a source was deleted.
+      if (row.chartScopesOverflow || !Array.isArray(row.chartScopes) || !row.chartScopes.length) continue;
+      const proofs = row.chartScopes.map(scope => this.inventories.get(scope)?.get(row.sourceSymbol));
+      if (proofs.some(proof => !proof || now - proof.observedAt > 30000 || proof.ids.has(row.sourceId)
+        || proof.observedAt <= (row.localEditAt || 0) || now - (row.localEditAt || 0) < 30000)) {
+        this.missingSources.delete(row.sourceId); continue;
+      }
+      const stamp = Math.min(...proofs.map(proof => proof.observedAt));
+      const pending = this.missingSources.get(row.sourceId);
+      if (!pending || pending.revision !== row.revision) {
+        this.missingSources.set(row.sourceId, { revision: row.revision, observedAt: stamp }); continue;
+      }
+      if (stamp - pending.observedAt >= 1000) this.acceptSource(row.sourceId, null, { local: true });
+    }
   }
   serialize() { return { schema: 1, records: [...this.records.values()].map(row => ({ ...row })) }; }
   status() {
@@ -162,6 +210,7 @@ class CandleLevelSync {
     const row = { ...(old || {}), ...(marker || {}), sourceId,
       id: marker?.id || old?.id || createHash('sha256').update('tv-candle:' + sourceId).digest('hex').slice(0, 24),
       revision: (old?.revision || 0) + 1, sourceVersion: Math.max(version, old?.sourceVersion || 0), localEdit: local, signature,
+      ...(local ? { localEditAt: this.clock() } : {}),
       side: sameCandle ? old.side : null, endTime: sameCandle ? old.endTime : null,
       windowed: true, price: null, removed: mappingDisabled || !source || (!marker && !reason), mappingDisabled,
       phase: reason ? 'error' : marker && (!sameCandle || !old.endTime) ? 'awaiting-tv' : 'queued', reason: reason || null,
