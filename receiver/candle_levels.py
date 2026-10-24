@@ -351,8 +351,8 @@ class CandleLevels:
         generation = hashlib.sha256(json.dumps(drawing, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
         return generation, records, drawing
 
-    def write_snapshot(self):
-        generation, _records, drawing = self.snapshot()
+    def write_snapshot(self, snapshot=None):
+        generation, _records, drawing = self.snapshot() if snapshot is None else snapshot
         protocol = snapshot_protocol(drawing)
         buffer = io.StringIO(newline='')
         writer = csv.writer(buffer, delimiter='\t', lineterminator='\n')
@@ -402,9 +402,10 @@ class CandleLevels:
             return None
 
     def state(self):
-        generation, records, drawing = self.snapshot()
+        snapshot = self.snapshot()
+        generation, records, drawing = snapshot
         # Retry an interrupted/locked atomic file replacement on the next read.
-        self.write_snapshot()
+        self.write_snapshot(snapshot)
         acknowledged = self.acknowledgements(generation, drawing)
         snapshot_applied = acknowledged is not None and len(acknowledged) == len(drawing)
         acknowledged = acknowledged or {}
