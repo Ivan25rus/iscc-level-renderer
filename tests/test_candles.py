@@ -7,7 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'receiver'))
 from candle_levels import CandleLevels, WindowHistory, read_window, candle_window_worker, window_offset
@@ -75,6 +75,47 @@ class CandleTests(unittest.TestCase):
         self.assertEqual(self.mt5.reads[0][2:], (self.stamp+self.offset, self.stamp+self.offset))
         self.ack(state)
         self.assertEqual(self.book.state()['levels'][0]['status'], 'ready')
+
+    def test_status_uses_one_snapshot_for_both_file_and_ack_without_caching_readiness(self):
+        pending=self.book.apply(self.payload)
+        self.ack(pending)
+        self.book.snapshot=Mock(wraps=self.book.snapshot)
+        ready=self.book.state()
+        self.assertEqual(self.book.snapshot.call_count,1)
+        self.assertTrue(ready['snapshotApplied'])
+        rows=list(csv.reader(io.StringIO((self.book.files()/'iscc-addon-levels.csv').read_text()),delimiter='\t'))
+        self.assertEqual(rows[0][2],ready['generation'])
+        self.assertEqual(rows[1][0],self.payload['id'])
+        self.assertEqual(self.book.rows()[0][3]['status'],'drawing')
+        self.now+=6
+        expired=self.book.state()
+        self.assertEqual(self.book.snapshot.call_count,2)
+        self.assertFalse(expired['snapshotApplied'])
+        self.assertEqual(expired['levels'][0]['status'],'drawing')
+
+    def test_standalone_snapshot_write_still_reads_current_rows_once(self):
+        self.book.apply(self.payload)
+        self.book.snapshot=Mock(wraps=self.book.snapshot)
+        self.book.write_snapshot()
+        self.assertEqual(self.book.snapshot.call_count,1)
+
+    def test_failed_snapshot_replace_is_retried_from_fresh_state(self):
+        self.book.apply(self.payload)
+        (self.book.files()/'iscc-addon-levels.csv').unlink()
+        original=os.replace
+        attempts=[]
+        def replace(source,target):
+            attempts.append((source,target))
+            if len(attempts)==1:raise PermissionError('temporary file lock')
+            return original(source,target)
+        self.book.snapshot=Mock(wraps=self.book.snapshot)
+        with patch('candle_levels.os.replace',side_effect=replace):
+            with self.assertRaises(PermissionError):self.book.state()
+            result=self.book.state()
+        self.assertEqual(self.book.snapshot.call_count,2)
+        self.assertEqual(len(attempts),2)
+        self.assertFalse(result['snapshotApplied'])
+        self.assertTrue((self.book.files()/'iscc-addon-levels.csv').exists())
 
     def test_arbitrary_tv_price_is_rejected_before_history_or_drawing(self):
         with self.assertRaises(ValueError):
