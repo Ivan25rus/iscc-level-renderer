@@ -1,5 +1,5 @@
 #property copyright "ISCC"
-#property version "1.15"
+#property version "1.17"
 #property indicator_chart_window
 #property indicator_plots 0
 
@@ -31,33 +31,59 @@ bool ReadLine(int handle,string &fields[]) {
    return StringSplit(line,'\t',fields)>0;
 }
 
-bool Load(Marker &markers[],string &generation,int &protocol) {
+// Reuse decoded rows only on a timer turn that cannot publish an ACK. Every
+// actual object audit still reads and validates the complete current file.
+Marker inputMarkers[];
+string cachedInputGeneration="";
+int cachedInputProtocol=0;
+bool cachedInputValid=false;
+
+bool Load(string &generation,int &protocol,bool allowCache=false) {
    int handle=FileOpen(INPUT_FILE,FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ,0,CP_UTF8);
-   if(handle==INVALID_HANDLE) return false;
+   if(handle==INVALID_HANDLE) {cachedInputValid=false;return false;}
    string parts[];
    bool valid=ReadLine(handle,parts) && ArraySize(parts)==4 && parts[0]=="ISCC_CANDLE_LEVELS" && (parts[1]=="1" || parts[1]=="2");
    protocol=valid ? (int)StringToInteger(parts[1]) : 0;
    int count=valid ? (int)StringToInteger(parts[3]) : -1;
-   if(!valid || count<0 || count>2000) {FileClose(handle);return false;}
+   if(!valid || count<0 || count>2000) {cachedInputValid=false;FileClose(handle);return false;}
    generation=parts[2];
-   if(StringLen(generation)!=64) {FileClose(handle);return false;}
-   ArrayResize(markers,count);
+   if(StringLen(generation)!=64) {cachedInputValid=false;FileClose(handle);return false;}
+   if(allowCache && cachedInputValid && generation==cachedInputGeneration
+      && protocol==cachedInputProtocol && count==ArraySize(inputMarkers)) {
+      FileClose(handle);
+      return true;
+   }
+   ArrayResize(inputMarkers,count);
    for(int i=0;i<count;i++) {
       if(!ReadLine(handle,parts) || ArraySize(parts)!=(protocol==2 ? 9 : 8)) {valid=false;break;}
-      markers[i].id=parts[0];markers[i].revision=parts[1];markers[i].symbol=parts[2];
-      markers[i].timeframe=parts[3];markers[i].time=(datetime)StringToInteger(parts[4]);
-      markers[i].price=StringToDouble(parts[5]);markers[i].tool=parts[6];markers[i].side=parts[7];
-      long rgb=protocol==2 ? StringToInteger(parts[8]) : (markers[i].side=="high" ? 16737095 : 49151);
+      inputMarkers[i].id=parts[0];inputMarkers[i].revision=parts[1];inputMarkers[i].symbol=parts[2];
+      inputMarkers[i].timeframe=parts[3];inputMarkers[i].time=(datetime)StringToInteger(parts[4]);
+      inputMarkers[i].price=StringToDouble(parts[5]);inputMarkers[i].tool=parts[6];inputMarkers[i].side=parts[7];
+      long rgb=protocol==2 ? StringToInteger(parts[8]) : (inputMarkers[i].side=="high" ? 16737095 : 49151);
       if(rgb<0 || rgb>16777215) {valid=false;break;}
-      markers[i].lineColor=FromRgb(rgb);
-      if(StringLen(markers[i].id)!=24 || markers[i].price<=0 || !MathIsValidNumber(markers[i].price)
-         || markers[i].time<=0 || (markers[i].tool!="line" && markers[i].tool!="ray")
-         || (markers[i].side!="high" && markers[i].side!="low" && markers[i].side!="price")) {valid=false;break;}
+      inputMarkers[i].lineColor=FromRgb(rgb);
+      if(StringLen(inputMarkers[i].id)!=24 || inputMarkers[i].price<=0 || !MathIsValidNumber(inputMarkers[i].price)
+         || inputMarkers[i].time<=0 || (inputMarkers[i].tool!="line" && inputMarkers[i].tool!="ray")
+         || (inputMarkers[i].side!="high" && inputMarkers[i].side!="low" && inputMarkers[i].side!="price")) {valid=false;break;}
    }
    if(valid) valid=ReadLine(handle,parts) && ArraySize(parts)==3 && parts[0]=="END" && parts[1]==generation && (int)StringToInteger(parts[2])==count;
    FileClose(handle);
+   cachedInputValid=valid;
+   if(valid) {
+      cachedInputGeneration=generation;cachedInputProtocol=protocol;
+   }
    return valid;
 }
+
+// ACK files expire after five seconds in the receiver. Refresh them only after
+// a completed verification, every two seconds for unchanged charts. Never keep
+// an old ready result alive by rewriting it on a skipped timer turn.
+const ulong VERIFY_INTERVAL_MS=2000;
+const ulong CLEANUP_INTERVAL_MS=30000;
+string verifiedGeneration="",verifiedTopology="";
+int verifiedProtocol=0;
+bool verified=false,cleanupVerified=false;
+ulong lastVerifiedAt=0,lastCleanupAt=0;
 
 bool Contains(Marker &markers[],string name,string symbol) {
    for(int i=0;i<ArraySize(markers);i++)
@@ -114,7 +140,7 @@ bool Draw(long chart,Marker &marker,bool &changed) {
       // A queued ObjectCreate is not confirmation of an applied level.
       if(ObjectFind(chart,name)!=0) return false;
    }
-   // Verify actual properties every tick; write only changed values. This also
+   // Verify actual properties on each audit; write only changed values. This
    // repairs deleted/edited owned objects without repainting unchanged charts.
    return EnsurePrice(chart,name,marker.price,changed)
       && EnsureInteger(chart,name,OBJPROP_COLOR,marker.lineColor,changed)
@@ -129,11 +155,13 @@ bool Draw(long chart,Marker &marker,bool &changed) {
 }
 
 int OnInit() {
-   EventSetTimer(1);
+   verified=false;cleanupVerified=false;
+   cachedInputValid=false;ArrayResize(inputMarkers,0);
+   if(!EventSetTimer(1)) return INIT_FAILED;
    // A bounded load receipt lets the installer verify the running version.
    int status=FileOpen("iscc-addon-levels-indicator-status.csv",FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ,0,CP_UTF8);
    if(status!=INVALID_HANDLE) {
-      FileWriteString(status,"ISCC_CANDLE_LEVELS_INDICATOR\t1.15\texisting-charts-only\t"+IntegerToString(ChartID())+"\n");
+      FileWriteString(status,"ISCC_CANDLE_LEVELS_INDICATOR\t1.17\texisting-charts-only\t"+IntegerToString(ChartID())+"\n");
       FileClose(status);
    }
    return INIT_SUCCEEDED;
@@ -144,38 +172,52 @@ int OnCalculate(const int rates_total,const int prev_calculated,const datetime &
    const long &tick_volume[],const long &volume[],const int &spread[]) {return rates_total;}
 
 void OnTimer() {
-   Marker markers[];string generation;int protocol;
-   if(!Load(markers,generation,protocol)) return;
    long charts[];string symbols[];bool changed[];
+   string topology="";
    for(long chart=ChartFirst();chart>=0;chart=ChartNext(chart)) {
       int index=ArraySize(charts);
       ArrayResize(charts,index+1);ArrayResize(symbols,index+1);ArrayResize(changed,index+1);
       charts[index]=chart;symbols[index]=ChartSymbol(chart);changed[index]=false;
+      topology+=IntegerToString(chart)+":"+IntegerToString(StringLen(symbols[index]))+":"
+         +symbols[index]+":"+IntegerToString((long)ChartPeriod(chart))+";";
    }
+   ulong now=GetTickCount64();
+   string generation;int protocol;
+   bool allowInputCache=verified && topology==verifiedTopology && now-lastVerifiedAt<VERIFY_INTERVAL_MS;
+   if(!Load(generation,protocol,allowInputCache)) {verified=false;return;}
+   bool stateChanged=generation!=verifiedGeneration || protocol!=verifiedProtocol || topology!=verifiedTopology;
+   if(verified && !stateChanged && now-lastVerifiedAt<VERIFY_INTERVAL_MS) return;
+   verified=false;
    bool cleanupReady=true;
-   for(int c=0;c<ArraySize(charts);c++) {
-      long chart=charts[c];
-      for(int j=ObjectsTotal(chart)-1;j>=0;j--) {
-         string name=ObjectName(chart,j);
-         if(StringFind(name,PREFIX)==0 && !Contains(markers,name,symbols[c])) {
-            if(!ObjectDelete(chart,name) || ObjectFind(chart,name)>=0) cleanupReady=false;
-            changed[c]=true;
+   // Full object enumeration is needed for changed snapshots/topology and a
+   // bounded periodic sweep, rather than for every unchanged timer turn.
+   if(stateChanged || !cleanupVerified || now-lastCleanupAt>=CLEANUP_INTERVAL_MS) {
+      for(int c=0;c<ArraySize(charts);c++) {
+         long chart=charts[c];
+         for(int j=ObjectsTotal(chart)-1;j>=0;j--) {
+            string name=ObjectName(chart,j);
+            if(StringFind(name,PREFIX)==0 && !Contains(inputMarkers,name,symbols[c])) {
+               if(!ObjectDelete(chart,name) || ObjectFind(chart,name)>=0) cleanupReady=false;
+               changed[c]=true;
+            }
          }
       }
+      cleanupVerified=cleanupReady;
+      if(cleanupReady) lastCleanupAt=GetTickCount64();
    }
    if(!cleanupReady) {
       for(int c=0;c<ArraySize(charts);c++) if(changed[c]) ChartRedraw(charts[c]);
       return;
    }
    bool found[],ready[];
-   ArrayResize(found,ArraySize(markers));ArrayResize(ready,ArraySize(markers));
+   ArrayResize(found,ArraySize(inputMarkers));ArrayResize(ready,ArraySize(inputMarkers));
    ArrayInitialize(found,false);ArrayInitialize(ready,true);
    for(int c=0;c<ArraySize(charts);c++) {
-      for(int i=0;i<ArraySize(markers);i++) {
-         if(symbols[c]!=markers[i].symbol) continue;
+      for(int i=0;i<ArraySize(inputMarkers);i++) {
+         if(symbols[c]!=inputMarkers[i].symbol) continue;
          found[i]=true;
          bool objectChanged=false;
-         if(!Draw(charts[c],markers[i],objectChanged)) ready[i]=false;
+         if(!Draw(charts[c],inputMarkers[i],objectChanged)) ready[i]=false;
          if(objectChanged) changed[c]=true;
       }
       // One redraw for the whole batch, and none for unchanged levels.
@@ -183,16 +225,22 @@ void OnTimer() {
    }
    int output=FileOpen(ACK_FILE,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ,0,CP_UTF8);
    if(output==INVALID_HANDLE) return;
-   FileWriteString(output,"ISCC_CANDLE_LEVELS_ACK\t"+IntegerToString(protocol)+"\t"+generation+"\t"+IntegerToString(ArraySize(markers))+"\n");
-   for(int i=0;i<ArraySize(markers);i++) {
+   bool outputReady=FileWriteString(output,"ISCC_CANDLE_LEVELS_ACK\t"+IntegerToString(protocol)+"\t"+generation+"\t"+IntegerToString(ArraySize(inputMarkers))+"\n")>0;
+   bool passReady=true;
+   for(int i=0;i<ArraySize(inputMarkers);i++) {
       // A closed/missing chart stays closed. Its marker remains pending until
       // the user opens a matching chart; rendering never creates chart tabs.
-      int digits=(int)SymbolInfoInteger(markers[i].symbol,SYMBOL_DIGITS);
-      string row=markers[i].id+"\t"+markers[i].revision+"\t"+markers[i].symbol+"\t"
-         +(found[i] && ready[i] ? "ready" : "pending")+"\t"+DoubleToString(markers[i].price,digits);
-      if(protocol==2) row+="\t"+IntegerToString(ToRgb(markers[i].lineColor));
-      FileWriteString(output,row+"\n");
+      int digits=(int)SymbolInfoInteger(inputMarkers[i].symbol,SYMBOL_DIGITS);
+      string row=inputMarkers[i].id+"\t"+inputMarkers[i].revision+"\t"+inputMarkers[i].symbol+"\t"
+         +(found[i] && ready[i] ? "ready" : "pending")+"\t"+DoubleToString(inputMarkers[i].price,digits);
+      if(protocol==2) row+="\t"+IntegerToString(ToRgb(inputMarkers[i].lineColor));
+      if(FileWriteString(output,row+"\n")==0) outputReady=false;
+      if(found[i] && !ready[i]) passReady=false;
    }
-   FileWriteString(output,"END\t"+generation+"\t"+IntegerToString(ArraySize(markers))+"\n");
+   if(FileWriteString(output,"END\t"+generation+"\t"+IntegerToString(ArraySize(inputMarkers))+"\n")==0) outputReady=false;
    FileClose(output);
+   if(!outputReady) return;
+   verifiedGeneration=generation;verifiedProtocol=protocol;verifiedTopology=topology;
+   lastVerifiedAt=GetTickCount64();
+   verified=passReady;
 }
