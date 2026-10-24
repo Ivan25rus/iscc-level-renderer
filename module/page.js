@@ -42,6 +42,10 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
   const collection = window._exposed_chartWidgetCollection;
   if (!collection?.getAll || collection.readOnly?.()) return { sources: [], series: [] };
   const sources = [], series = [], panels = [], needed = new Map();
+  const widgets = collection.getAll();
+  const inventory = /^[A-Za-z0-9_-]{1,128}$/.test(options.scope || '')
+    ? { scope: options.scope, complete: widgets.length <= 16, symbols: [] } : null;
+  const inventories = new Map();
   const selective = options.selective === true;
   const period = value => {
     const raw = String(value || '').toUpperCase();
@@ -66,19 +70,30 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
   for (const anchor of (Array.isArray(options.anchors) ? options.anchors : []).slice(0, 2000)) {
     if (anchor) addAnchor(anchor.symbol, anchor.interval, anchor.time);
   }
-  for (const [widgetIndex, widget] of collection.getAll().slice(0, 16).entries()) {
+  for (const [widgetIndex, widget] of widgets.slice(0, 16).entries()) {
     const model = widget.model?.(), main = model?.mainSeries?.();
     const symbol = main?.symbol?.();
-    if (!symbols.has(symbol) || main.isLoading()) continue;
+    if (!symbols.has(symbol)) continue;
+    if (!inventories.has(symbol)) inventories.set(symbol, { symbol, ids: new Set(), complete: true });
+    const contents = inventories.get(symbol);
+    const synchronizer = widget.lineToolsSynchronizer?.();
+    if (widget.isReady?.() !== true || widget._inLoadingState === true || collection._loadingContent === true
+      || synchronizer?.hasPendingLoadRequests?.() !== false
+      || synchronizer?.hasPendingSaveRequests?.() !== false) contents.complete = false;
+    if (main.isLoading()) { contents.complete = false; continue; }
     const interval = String(main.interval());
     panels.push({ widget, widgetIndex, main, symbol, interval });
-    for (const source of model.dataSources().slice(0, 4000)) {
+    const dataSources = model.dataSources();
+    if (dataSources.length > 4000) contents.complete = false;
+    for (const source of dataSources.slice(0, 4000)) {
       // Saved line tools expose a server timestamp; studies have a different state API.
-      if (typeof source.serverUpdateTime !== 'function' || source.isLoading?.()) continue;
+      if (typeof source.serverUpdateTime !== 'function') continue;
+      if (source.isLoading?.()) { contents.complete = false; continue; }
       const version = source.serverUpdateTime();
-      if (!Number.isFinite(version) || version <= 0) continue;
+      if (!Number.isFinite(version) || version <= 0) { contents.complete = false; continue; }
       const state = source.state();
       if (!['LineToolHorzLine', 'LineToolHorzRay'].includes(state?.type) || state.state?.symbol !== symbol) continue;
+      contents.ids.add(source.id());
       sources.push([source.id(), { symbol, serverUpdateTime: version, state: {
         type: state.type, points: (state.points || []).slice(0, 1).map(point => ({
           time_t: point.time_t, interval: point.interval, offset: point.offset, price: point.price
@@ -86,7 +101,7 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
       } }]);
       const point = state.points?.[0];
       if (point && Number(point.offset || 0) === 0) addAnchor(symbol, point.interval, point.time_t);
-      if (sources.length >= 2000) break;
+      if (sources.length >= 2000) { if (inventory) inventory.complete = false; break; }
     }
     if (sources.length >= 2000) break;
   }
@@ -156,6 +171,10 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
     }
   }
   const snapshot = { sources, series };
+  if (inventory) {
+    inventory.symbols = [...inventories.values()].map(value => ({ ...value, ids: [...value.ids] }));
+    snapshot.inventory = inventory;
+  }
   if (!selective) return snapshot;
   const signature = JSON.stringify(snapshot);
   const state = window.__isccAddonCandleSnapshot ||= { generation: Date.now() + '-' + Math.random(), revision: 0, signature: '' };
