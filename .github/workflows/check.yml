@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: JavaScript unit tests
-        run: node --test tests/core.test.js tests/renderer.test.js
+        run: node --test tests/*.test.js
       - name: Python unit tests
         run: python -m unittest discover -s tests -p 'test_*.py'
       - name: Addon indicator chart policy
