@@ -53,11 +53,11 @@ async function targets(signal) {
   if (!Array.isArray(value)) throw Error('Некорректный список вкладок TradingView');
   return value.filter(row => chart(row.url) && localDebugger(row.webSocketDebuggerUrl)).slice(0, 16);
 }
-function startReader({ enabled, acceptSnapshot, sources, anchors, onError = () => {},
+function startReader({ enabled, acceptSnapshot, acceptInventory = () => {}, sources, anchors, onError = () => {},
   getTargets = targets, run = evaluate, intervalMs = 10000, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let closed = false, running = false, timer, controller;
   const active = () => !closed && enabled();
-  const seen = new Map(), installed = new Set();
+  const seen = new Map(), installed = new Set(), inventories = new Map();
   const collector = snapshotCandlePage.toString(), calendar = candleWindowReader.toString();
   const version = JSON.stringify(createHash('sha256').update(collector).update(calendar).digest('hex'));
   function schedule(delay) { clearTimer(timer); if (!closed) { timer = setTimer(tick, delay); timer.unref?.(); } }
@@ -65,12 +65,13 @@ function startReader({ enabled, acceptSnapshot, sources, anchors, onError = () =
     if (closed || running) return;
     running = true; controller = new AbortController();
     try {
-      if (!active()) { seen.clear(); installed.clear(); return; }
+      if (!active()) { seen.clear(); installed.clear(); inventories.clear(); return; }
       const charts = await getTargets(controller.signal);
       for (const target of charts) {
         if (!active()) break;
         try {
-        const options = JSON.stringify({ selective: true, sources: sources(), anchors: anchors(), ack: seen.get(target.id) });
+        const scope = target.url?.match(/\/chart\/([A-Za-z0-9_-]+)(?:\/|[?#]|$)/)?.[1], readStartedAt = Date.now();
+        const options = JSON.stringify({ selective: true, scope, sources: sources(), anchors: anchors(), ack: seen.get(target.id) });
         let result;
         if (installed.has(target.id)) result = await run(target.webSocketDebuggerUrl, `(() => {
           const runtime = window.__isccAddonCandleRuntime;
@@ -86,20 +87,31 @@ function startReader({ enabled, acceptSnapshot, sources, anchors, onError = () =
           installed.add(target.id);
         }
         if (!active()) break;
-        if (result?.unchanged && result.token === seen.get(target.id)) continue;
+        if (result?.unchanged && result.token === seen.get(target.id)) {
+          const inventory = inventories.get(target.id);
+          if (inventory) await acceptInventory(inventory, readStartedAt);
+          continue;
+        }
+        if (!result?.token && Array.isArray(result?.sources) && !result.sources.length
+          && Array.isArray(result.series) && !result.series.length) {
+          await acceptInventory({ scope, complete: false, symbols: [] }, readStartedAt);
+          seen.delete(target.id); inventories.delete(target.id); continue;
+        }
         if (result && Array.isArray(result.sources) && Array.isArray(result.series)) {
-          await acceptSnapshot(result); seen.set(target.id, result.token);
+          await acceptSnapshot({ ...result, readStartedAt });
+          if (result.inventory) inventories.set(target.id, result.inventory); else inventories.delete(target.id);
+          seen.set(target.id, result.token);
         }
         } catch (error) {
-          seen.delete(target.id); installed.delete(target.id);
+          seen.delete(target.id); installed.delete(target.id); inventories.delete(target.id);
           if (active()) onError(error);
         }
       }
-      for (const id of installed) if (!charts.some(target => target.id === id)) { seen.delete(id); installed.delete(id); }
+      for (const id of installed) if (!charts.some(target => target.id === id)) { seen.delete(id); installed.delete(id); inventories.delete(id); }
     } catch (error) { if (active()) onError(error); }
     finally { running = false; controller = undefined; schedule(intervalMs); }
   }
   schedule(1000);
-  return { refresh() { if (!running) schedule(250); }, stop() { closed = true; clearTimer(timer); controller?.abort(); seen.clear(); installed.clear(); } };
+  return { refresh() { if (!running) schedule(250); }, stop() { closed = true; clearTimer(timer); controller?.abort(); seen.clear(); installed.clear(); inventories.clear(); } };
 }
 module.exports = { startReader, chart, localDebugger, evaluate };
