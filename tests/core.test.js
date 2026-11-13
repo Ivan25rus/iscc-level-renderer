@@ -4,12 +4,12 @@ const core = require('../module/candleLevels');
 const { selectExtreme, timeframe, colorRgb, updateManagedLevels, OWNER, GROUP_KEYS } = core;
 // Explicit synthetic mappings for these tests; shipped configuration is empty.
 const mappings = [
-  {enabled:true,sourceSymbol:'CAPITALCOM:NAS100',mt5Symbol:'USTEC'},
-  {enabled:true,sourceSymbol:'SPREADEX:SPX',mt5Symbol:'SPX500'},
+  {enabled:true,sourceSymbol:'CAPITALCOM:NAS100',mt5Symbol:'USTEC',standardSpread:1.5},
+  {enabled:true,sourceSymbol:'SPREADEX:SPX',mt5Symbol:'SPX500',standardSpread:0.65},
   {enabled:true,sourceSymbol:'CAPITALCOM:US500',mt5Symbol:'SPX500'}
 ];
 class CandleLevelSync extends core.CandleLevelSync {
-  constructor(options={}) { super({getConfig:()=>({mappings}),...options}); }
+  constructor(options={}) { super({getConfig:()=>({mappings,warnOnLevelDifference:true}),...options}); }
 }
 const drawing = (id, source, config={mappings}) => core.drawing(id, source, config);
 const { snapshotCandlePage, candleWindowReader } = require('../module/page');
@@ -86,9 +86,62 @@ test('an invalid original anchor remains an error after restart', () => {
   assert.equal(restored.sync.status().errors, 1);
 });
 
+test('confirmed removals do not queue hundreds of deletes ahead of a new level after restart', async () => {
+  const records=Array.from({length:515},(_,index)=>({
+    id:index.toString(16).padStart(24,'0'),sourceId:'old-'+index,revision:2,
+    removed:true,phase:'removed',windowed:true
+  }));
+  const f=fixture({initial:{records}});
+  f.bars();f.sync.acceptSource('new',shape());
+  await f.sync.tick();
+  assert.equal(f.calls[0].payload.action,'upsert');
+  assert.equal(f.calls.filter(row=>row.payload?.action==='delete').length,0);
+  assert.equal(f.sync.status().ready,1);
+  assert.equal(f.sync.status().pendingRemovals,0);
+});
+
+test('restart reconciles confirmed removals once and replays only a resurrected or unconfirmed deletion', async () => {
+  const stale='a'.repeat(24), newer='b'.repeat(24), unfinished='c'.repeat(24);
+  const records=[stale,newer,unfinished].map(id=>({id,sourceId:id,revision:2,removed:true,
+    phase:id===unfinished?'deleting':'removed',windowed:true}));
+  const f=fixture({initial:{records}});
+  const remote=new Map([[stale,1],[newer,3],[unfinished,1]]);
+  f.adapter.request=async (route,payload)=>{
+    f.calls.push({route,payload});
+    if(payload?.action==='delete')remote.delete(payload.id);
+    return {candleLevels:{snapshotApplied:true,levels:[...remote].map(([id,revision])=>({id,revision}))}};
+  };
+  await f.sync.tick();await f.sync.tick();await f.sync.tick();
+  assert.deepEqual(f.calls.map(row=>row.payload?.id),[unfinished,stale]);
+  assert.equal(f.sync.status().pendingRemovals,0);
+  const idle=fixture({initial:f.sync.serialize()});
+  await idle.sync.tick();await idle.sync.tick();
+  assert.deepEqual(idle.calls,[{route:'/candle-levels',payload:undefined}]);
+});
+
 function shape(price = 30368.7, interval = '1', symbol = 'CAPITALCOM:NAS100', type = 'LineToolHorzLine') {
   return { symbol, state: { type, points: [{ time_t: TIME, offset: 0, price, interval }] } };
 }
+
+test('Partial line properties preserve a confirmed D1 price until the full unchanged anchor returns',async()=>{
+  const prior=fixture();prior.bars(30368.7,30340,'1D');prior.sync.acceptSource('partial',shape(30368.7,'1D'));await prior.sync.tick();
+  const f=fixture({initial:prior.sync.serialize()}),before=f.sync.records.get('partial');
+  f.sync.acceptSource('partial',{symbol:'CAPITALCOM:NAS100',state:{type:'LineToolHorzLine',state:{linecolor:'#2962FF'}}},{local:true});
+  assert.equal(f.sync.records.get('partial').price,before.price);
+  assert.equal(f.sync.records.get('partial').side,'high');
+  f.sync.acceptSource('partial',shape(30368.7,'1D'));
+  assert.equal(f.sync.records.get('partial').sourceRefreshPending,undefined);
+  assert.equal(f.sync.records.get('partial').price,before.price);
+  assert.deepEqual(f.sync.requiredBars(),[]);
+});
+
+test('A partial anchor that really changes price cannot expose the old LT for a new entry',async()=>{
+  const f=fixture();f.bars();f.sync.acceptSource('changed',shape());await f.sync.tick();
+  f.sync.acceptSource('changed',{symbol:'CAPITALCOM:NAS100',state:{type:'LineToolHorzLine',points:[{price:30340}]}},{local:true});
+  assert.deepEqual(f.sync.currentLevels().USTEC,[]);
+  f.sync.acceptSource('changed',shape(30340));await f.sync.tick();
+  assert.equal(f.sync.records.get('changed').side,'low');
+});
 function fixture(options = {}) {
   const calls = [], saved = [], published = []; let now = TIME * 1000 + 86400000;
   let response = [], rendering = options.rendering !== false;
@@ -135,6 +188,147 @@ test('only acknowledged MT5 price is published, never the source TV price', asyn
   assert.equal(request.sourcePrice, undefined);
   assert.deepEqual(f.published.at(-1), { USTEC: [30380.25] });
   assert.equal(f.sync.status().ready, 1);
+});
+
+test('a matched manual level warns strictly beyond two standard spreads in either direction', () => {
+  for (const [sourceSymbol, symbol, referencePrice, threshold] of [
+    ['CAPITALCOM:NAS100', 'USTEC', 27000, 3], ['SPREADEX:SPX', 'SPX500', 6900, 1.3]
+  ]) {
+    for (const direction of [-1, 1]) {
+      for (const extra of [-.01, 0, .01]) {
+        const f = fixture();
+        f.sync.acceptBars({ event: 'candle_bars', symbol: sourceSymbol, interval: '1',
+          bars: [[TIME, referencePrice, referencePrice - 8]], windows: [[TIME, TIME + 60]] });
+        f.sync.acceptSource('manual', shape(referencePrice, '1', sourceSymbol));
+        const row = f.sync.records.get('manual');
+        row.brokerSymbol = symbol;
+        const mappedPrice = referencePrice + direction * (threshold + extra);
+        const reply = { ...row, status: 'ready', price: mappedPrice };
+        f.sync.acceptReply({ levels: [{ ...reply, revision: row.revision - 1 }] });
+        assert.deepEqual(f.sync.levelWarnings(), []);
+        f.sync.acceptReply({ levels: [reply] });
+        const warnings = f.sync.levelWarnings();
+        if (extra <= 0) assert.deepEqual(warnings, []);
+        else assert.deepEqual(warnings, [{ id: warnings[0]?.id, symbol, referencePrice, mappedPrice, threshold }]);
+        assert.deepEqual(f.sync.currentLevels(), { [symbol]: [mappedPrice] });
+        assert.deepEqual(f.calls, [], 'The warning itself does not read from MT5');
+      }
+    }
+  }
+});
+
+test('a redraw drops the old warning and a color change cannot renew the same warning', async () => {
+  const f = fixture();
+  f.bars(); f.sync.acceptSource('manual', shape()); await f.sync.tick();
+  const [original] = f.sync.levelWarnings();
+  assert.ok(original?.id);
+  f.advance(20_000);
+  f.sync.acceptSource('manual', colored(), { local: true }); await f.sync.tick();
+  assert.deepEqual(f.sync.levelWarnings(), [original]);
+  f.advance(10_001);
+  assert.deepEqual(f.sync.levelWarnings(), [], 'Color does not extend the display window');
+  f.sync.acceptSource('manual', shape(30340), { local: true }); await f.sync.tick();
+  assert.notEqual(f.sync.levelWarnings()[0]?.id, original.id);
+  assert.equal(f.sync.levelWarnings()[0]?.referencePrice, 30340);
+  f.sync.acceptSource('manual', null, { local: true });
+  assert.deepEqual(f.sync.levelWarnings(), []);
+});
+
+test('warning history survives a restart after the toast has expired and does not duplicate reconfirmed warnings', async () => {
+  const f = fixture();
+  f.bars(); f.sync.acceptSource('manual', shape()); await f.sync.tick();
+  const [toast] = f.sync.levelWarnings();
+  const [entry] = f.sync.levelWarningHistory();
+  assert.ok(entry.at > 0);
+  assert.deepEqual(entry, { ...toast, at: entry.at });
+  f.advance(30_001);
+  assert.deepEqual(f.sync.levelWarnings(), []);
+  assert.deepEqual(f.sync.levelWarningHistory(), [entry]);
+
+  const restored = fixture({ initial: JSON.parse(JSON.stringify(f.saved.at(-1))) });
+  assert.deepEqual(restored.sync.levelWarningHistory(), [entry]);
+  assert.deepEqual(restored.sync.levelWarnings(), []);
+  restored.sync.acceptSource('manual', shape()); await restored.sync.tick();
+  assert.deepEqual(restored.sync.levelWarningHistory(), [entry]);
+  restored.bars();
+  restored.sync.acceptSource('manual', shape(30340), { local: true }); await restored.sync.tick();
+  assert.deepEqual(restored.sync.levelWarningHistory().map(item => item.referencePrice), [30340, entry.referencePrice]);
+});
+
+test('warning history keeps the most recent 50 entries', async () => {
+  const f = fixture(); f.bars();
+  for (let index = 0; index < 51; index++) {
+    f.sync.acceptSource(`manual-${index}`, shape());
+    const row = f.sync.records.get(`manual-${index}`);
+    row.brokerSymbol = 'USTEC';
+    f.sync.acceptReply({ levels: [{ ...row, status: 'ready', price: 30380.25 + index }] });
+  }
+  await f.sync.save();
+  const restored = fixture({ initial: f.saved.at(-1) });
+  const entries = restored.sync.levelWarningHistory();
+  assert.equal(entries.length, 50);
+  assert.equal(entries[0].mappedPrice, 30430.25);
+  assert.equal(entries.at(-1).mappedPrice, 30381.25);
+});
+
+test('restored prices and generated Opening Range levels do not warn', async () => {
+  const f = fixture();
+  f.bars(); f.sync.acceptSource('manual', shape()); await f.sync.tick();
+  const restored = fixture({ initial: f.sync.serialize() });
+  assert.deepEqual(restored.sync.levelWarnings(), []);
+  restored.sync.acceptSource('manual', shape()); await restored.sync.tick();
+  assert.equal(restored.sync.levelWarnings().length, 1);
+
+  const range = fixture(); range.bars();
+  const source = shape(30368.7, '1', 'CAPITALCOM:NAS100', 'LineToolHorzRay');
+  source.state.state = { text: `ISCC NY OR | ${TIME + 23_400} | high` };
+  // Keep this synthetic Opening Range active while the exact MT5 reply arrives.
+  range.sync.clock = () => (TIME + 3600) * 1000;
+  range.sync.acceptSource('opening-range', source); await range.sync.tick();
+  assert.equal(range.sync.status().ready, 1);
+  assert.deepEqual(range.sync.levelWarnings(), []);
+});
+
+test('restart retains the acknowledged candle price without republishing it before fresh source verification',async()=>{
+  const original=fixture();original.bars();original.sync.acceptSource('one',shape());await original.sync.tick();
+  let saved=original.sync.serialize();
+  for(let restart=0;restart<2;restart++) {
+    const restored=fixture({initial:saved,getAdapter:()=>{throw Error('VPS reply delayed');}});
+    assert.deepEqual(restored.sync.currentLevels(),{USTEC:[30380.25]});
+    assert.equal(restored.sync.status().ready,0,'Retaining a known price does not invent a new indicator acknowledgement');
+    await restored.sync.tick();
+    assert.deepEqual(restored.published.at(-1),{},'An omitted instrument preserves the existing LT group');
+    assert.deepEqual(updateManagedLevels({groups:[{key:'owned',source:OWNER,ticker:'USTEC',levels:[30380.25]}]},
+      restored.published.at(-1),{preserveUnspecified:true}).groups[0].levels,[30380.25]);
+    saved=restored.sync.serialize();
+    if(restart===1) {
+      restored.sync.acceptSource('one',null);await restored.sync.publishCurrent();
+      assert.deepEqual(restored.published.at(-1),{USTEC:[]},'Explicit source deletion still clears the retained level');
+    }
+  }
+});
+
+test('restart never restores an unacknowledged, moved, invalid or legacy candle price',async()=>{
+  const original=fixture();original.bars();original.sync.acceptSource('one',shape());await original.sync.tick();
+  for(const change of [{price:null},{phase:'error'},{retire:true},{windowed:false},{selectionError:true},
+    {brokerSymbol:'SPX500'},{endTime:null},{removed:true}]) {
+    const saved=original.sync.serialize();Object.assign(saved.records[0],change);
+    assert.deepEqual(fixture({initial:saved}).sync.currentLevels(),{USTEC:[]});
+  }
+  const restored=fixture({initial:original.sync.serialize()});
+  restored.sync.acceptSource('one',shape(30340));
+  assert.deepEqual(restored.sync.currentLevels(),{USTEC:[]});
+});
+
+test('a definite indicator error removes the retained price and cannot revive it on the next restart',async()=>{
+  const original=fixture();original.bars();original.sync.acceptSource('one',shape());await original.sync.tick();
+  const restored=fixture({initial:original.sync.serialize()});
+  const row=restored.sync.records.get('one');
+  restored.sync.acceptReply({levels:[{...row,symbol:'USTEC',status:'error',reason:'Candle is invalid'}]});
+  // A queued row is first sent for revalidation before replies are accepted.
+  row.phase='drawing';restored.sync.acceptReply({levels:[{...row,symbol:'USTEC',status:'error',reason:'Candle is invalid'}]});
+  assert.deepEqual(restored.sync.currentLevels(),{USTEC:[]});
+  assert.deepEqual(fixture({initial:restored.sync.serialize()}).sync.currentLevels(),{USTEC:[]});
 });
 
 test('missing indicator acknowledgement keeps level out of LT', async () => {
@@ -397,7 +591,8 @@ test('legacy saved geometry gets a new revision before a TV-window request is se
   assert.equal(f.sync.records.get('one').revision,oldRevision+1);
   assert.equal(f.sync.records.get('one').phase,'awaiting-tv');
   await f.sync.tick();assert.equal(f.calls.at(-1).payload.action,'delete');
-  f.bars();await f.sync.tick();assert.equal(f.sync.status().ready,1);
+  f.bars();await f.sync.tick();assert.equal(f.sync.status().ready,0,'Fresh bars alone do not prove that the drawing still exists');
+  f.sync.acceptSource('one',shape());await f.sync.tick();assert.equal(f.sync.status().ready,1);
   assert.ok(f.calls.at(-2).payload.revision>oldRevision);
 });
 

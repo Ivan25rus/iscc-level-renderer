@@ -40,7 +40,16 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
   const symbols = new Set(Array.isArray(options.sources) ? options.sources.slice(0, 32)
     : ['CAPITALCOM:NAS100', 'SPREADEX:SPX', 'CAPITALCOM:US500']);
   const collection = window._exposed_chartWidgetCollection;
-  if (!collection?.getAll || collection.readOnly?.()) return { sources: [], series: [] };
+  // An empty response without an acknowledgement token clears any prior
+  // inventory proof while TradingView replaces its chart content.
+  if (!collection?.getAll || collection._loadingContent === true) return { sources: [], series: [] };
+  const layouts = options.sourceLayouts || {}, readOnly = collection.readOnly?.() === true;
+  const scoped = /^[A-Za-z0-9_-]{1,128}$/.test(options.scope || '');
+  for (const symbol of symbols) {
+    const selected = layouts[symbol];
+    if ((selected && (!scoped || selected !== options.scope)) || (readOnly && (!selected || !scoped))) symbols.delete(symbol);
+  }
+  if (readOnly && !symbols.size) return { sources: [], series: [] };
   const sources = [], series = [], panels = [], needed = new Map();
   const widgets = collection.getAll();
   const inventory = /^[A-Za-z0-9_-]{1,128}$/.test(options.scope || '')
@@ -67,30 +76,44 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
     const times = needed.get(key);
     if (!times.has(stamp) && anchorCount < 4000) { times.add(stamp); anchorCount++; }
   };
-  for (const anchor of (Array.isArray(options.anchors) ? options.anchors : []).slice(0, 2000)) {
+  const anchors = Array.isArray(options.anchors) ? options.anchors : [];
+  for (const anchor of anchors.slice(0, 2000)) {
     if (anchor) addAnchor(anchor.symbol, anchor.interval, anchor.time);
   }
   for (const [widgetIndex, widget] of widgets.slice(0, 16).entries()) {
     const model = widget.model?.(), main = model?.mainSeries?.();
     const symbol = main?.symbol?.();
     if (!symbols.has(symbol)) continue;
-    if (!inventories.has(symbol)) inventories.set(symbol, { symbol, ids: new Set(), complete: true });
+    if (!inventories.has(symbol)) inventories.set(symbol, { symbol, ids: new Set(), complete: true, unsafe: false, pendingSaveIds: new Set() });
     const contents = inventories.get(symbol);
+    if (widget._inLoadingState === true || main.isLoading()) { contents.unsafe = true; continue; }
     const synchronizer = widget.lineToolsSynchronizer?.();
-    if (widget.isReady?.() !== true || widget._inLoadingState === true || collection._loadingContent === true
-      || synchronizer?.hasPendingLoadRequests?.() !== false
-      || synchronizer?.hasPendingSaveRequests?.() !== false) contents.complete = false;
-    if (main.isLoading()) { contents.complete = false; continue; }
+    if (widget.isReady?.() !== true || synchronizer?.hasPendingLoadRequests?.() !== false) contents.unsafe = true;
+    if (synchronizer?.hasPendingSaveRequests?.() !== false) {
+      contents.complete = false;
+      // Switching symbols can strand a deletion for the previous symbol. Send
+      // only its IDs for host-side classification; unknown changes still veto
+      // deletion. Never bypass an in-flight save, group change or present tool.
+      const pending = synchronizer?._invalidatedLineToolsAndStudyStubs;
+      if (synchronizer?._pendingSaveRequestsCounter === 0 && pending instanceof Map && pending.size > 0 && pending.size <= 2000
+        && synchronizer._invalidatedLineToolGroups instanceof Map && !synchronizer._invalidatedLineToolGroups.size
+        && synchronizer._migratedSharedLineToolsDuplicates instanceof Set && !synchronizer._migratedSharedLineToolsDuplicates.size
+        && typeof model.dataSourceForId === 'function'
+        && [...pending.keys()].every(id => typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(id)
+          && model.dataSourceForId(id) === null)) {
+        for (const id of pending.keys()) contents.pendingSaveIds.add(id);
+      } else contents.unsafe = true;
+    }
     const interval = String(main.interval());
     panels.push({ widget, widgetIndex, main, symbol, interval });
     const dataSources = model.dataSources();
-    if (dataSources.length > 4000) contents.complete = false;
+    if (dataSources.length > 4000) contents.unsafe = true;
     for (const source of dataSources.slice(0, 4000)) {
       // Saved line tools expose a server timestamp; studies have a different state API.
       if (typeof source.serverUpdateTime !== 'function') continue;
-      if (source.isLoading?.()) { contents.complete = false; continue; }
+      if (source.isLoading?.()) { contents.unsafe = true; continue; }
       const version = source.serverUpdateTime();
-      if (!Number.isFinite(version) || version <= 0) { contents.complete = false; continue; }
+      if (!Number.isFinite(version) || version <= 0) { contents.unsafe = true; continue; }
       const state = source.state();
       if (!['LineToolHorzLine', 'LineToolHorzRay'].includes(state?.type) || state.state?.symbol !== symbol) continue;
       contents.ids.add(source.id());
@@ -105,6 +128,12 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
     }
     if (sources.length >= 2000) break;
   }
+  const sourceSignature = options.sourceOnly ? JSON.stringify([sources,
+    panels.map(({ widgetIndex, symbol, interval }) => [widgetIndex, symbol, interval])]) : null;
+  const fastState = options.sourceOnly && window.__isccAddonCandleSourceSnapshot;
+  if (fastState && options.ack === fastState.generation + ':' + fastState.revision
+    && sourceSignature === fastState.sourceSignature && !anchors.length)
+    return { unchanged: true, token: options.ack };
   for (const { widget, widgetIndex, main, symbol, interval } of panels) {
     const wanted = needed.get(symbol + '|' + period(interval)) || new Set();
     const values = [], windows = [];
@@ -171,16 +200,74 @@ function snapshotCandlePage(makeWindowReader = candleWindowReader, options = {})
     }
   }
   const snapshot = { sources, series };
+  if (options.sourceOnly) snapshot.sourceSignature = sourceSignature;
   if (inventory) {
-    inventory.symbols = [...inventories.values()].map(value => ({ ...value, ids: [...value.ids] }));
+    inventory.symbols = [...inventories.values()].map(value => ({ symbol: value.symbol, ids: [...value.ids],
+      complete: value.complete && !value.unsafe,
+      ...(!value.unsafe && value.pendingSaveIds.size ? { pendingSaveIds: [...value.pendingSaveIds] } : {}) }));
     snapshot.inventory = inventory;
   }
   if (!selective) return snapshot;
   const signature = JSON.stringify(snapshot);
-  const state = window.__isccAddonCandleSnapshot ||= { generation: Date.now() + '-' + Math.random(), revision: 0, signature: '' };
+  const cacheKey = options.sourceOnly ? '__isccAddonCandleSourceSnapshot' : '__isccAddonCandleSnapshot';
+  const state = window[cacheKey] ||= { generation: Date.now() + '-' + Math.random(), revision: 0, signature: '' };
   if (state.signature !== signature) { state.signature = signature; state.revision++; }
+  if (options.sourceOnly) state.sourceSignature = sourceSignature;
   const token = state.generation + ':' + state.revision;
   return options.ack === token ? { unchanged: true, token } : { ...snapshot, token };
 }
 
-module.exports = { snapshotCandlePage, candleWindowReader };
+async function readCandleHistory(anchor, makeWindowReader = candleWindowReader) {
+  // A separate bounded data session never changes a chart, its subscriptions,
+  // drawings, timeframe or visible range. Always destroy it, including errors.
+  if(!anchor || !/^[A-Z0-9_]+:[A-Z0-9_.!-]+$/.test(anchor.symbol || '')
+    || !/^(?:M(?:1|2|3|4|5|6|10|12|15|20|30)|H(?:1|2|3|4|6|8|12)|D1|W1|MN1)$/.test(anchor.interval || '')
+    || !Number.isSafeInteger(anchor.time) || anchor.time<=0)return null;
+  const key=JSON.stringify(anchor),cache=window.__isccCandleHistoryCache ||= new Map();
+  const cached=cache.get(key);
+  if(cached && cached.retryAt>Date.now())return cached.series || null;
+  if(window._exposed_chartWidgetCollection?._loadingContent===true)return null;
+  const api=window.TradingViewApi?.chart?.(0),widget=api?._chartWidget;
+  if(widget?._inLoadingState===true)return null;
+  const existing=widget?.chartSession?.();
+  if(!existing?.chartApi || !existing?.wireFormat || !api?._prepareEndOfPeriodArgs)return null;
+  function remember(series){
+    cache.set(key,{retryAt:Date.now()+(series ? 60000 : 30000),series});
+    while(cache.size>256)cache.delete(cache.keys().next().value);
+    return series;
+  }
+  const resolution=anchor.interval==='MN1' ? '1M' : anchor.interval==='D1' ? '1D'
+    : anchor.interval==='W1' ? '1W' : anchor.interval[0]==='H' ? String(Number(anchor.interval.slice(1))*60) : anchor.interval.slice(1);
+  let session,timer,info;
+  try {
+    session=new existing.constructor(existing.chartApi(),existing.wireFormat(),true);
+    const plots=await new Promise((resolve,reject)=>{
+      timer=setTimeout(()=>reject(Error('История исходной свечи пока недоступна')),5000);
+      session.connect();
+      session.resolveSymbol('symbol_1',anchor.symbol,message=>{
+        if(message.method==='symbol_resolved')info=message.params?.[1];
+        if(message.method==='symbol_error')reject(Error('Не подтверждён инструмент исходной свечи'));
+      });
+      session.createSeries('sds_1','s1','symbol_1',resolution,4,
+        {type:'time-range',from:anchor.time,to:anchor.time+1},message=>{
+          if(message.method==='data_update')resolve(message.params?.plots);
+          if(message.method==='series_error')reject(Error('История исходной свечи отклонена TradingView'));
+        });
+    });
+    if(!Array.isArray(plots) || !info?.timezone || !info.session)return remember(null);
+    const value=plots.find(row=>Array.isArray(row?.value) && row.value.length>=4 && row.value[0]===anchor.time
+      && row.value.slice(0,4).every(Number.isFinite))?.value;
+    if(!value)return remember(null);
+    const isolated={_chartWidget:{model:()=>({model:()=>({timezone:()=>info.timezone,
+      mainSeries:()=>({symbolInfo:()=>info,interval:()=>resolution})})})}};
+    const calendarApi={_prepareEndOfPeriodArgs:()=>api._prepareEndOfPeriodArgs.call(isolated)};
+    const end=makeWindowReader(calendarApi,info)(anchor.time);
+    const series={event:'candle_bars',symbol:anchor.symbol,interval:anchor.interval,
+      bars:[[value[0],value[2],value[3]]],windows:end ? [[anchor.time,end]] : []};
+    return remember(series);
+  } catch {
+    return remember(null);
+  } finally {clearTimeout(timer);session?.destroy();}
+}
+
+module.exports = { snapshotCandlePage, candleWindowReader, readCandleHistory };
